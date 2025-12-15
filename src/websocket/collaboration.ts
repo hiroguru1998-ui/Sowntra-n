@@ -346,7 +346,7 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
           userName: conn.userName,
           userEmail: conn.userEmail,
           color: conn.color,
-          cursor: conn.cursor, // Keep cursor for now, but it will be stale
+          cursor: conn.cursor,
           socketId: conn.socket.id,
           role: (conn.socket as any).userRole || 'viewer'
         }));
