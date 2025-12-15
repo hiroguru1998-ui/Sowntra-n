@@ -173,8 +173,25 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
         (socket as any).dbUserId = dbUserId;
 
         // Add to board connections
+        // First, remove any existing connection for this user to prevent duplicates on refresh
         if (!boardConnections.has(boardId)) {
           boardConnections.set(boardId, new Set());
+        } else {
+          // Remove any existing connections for the same user (by userId or userEmail)
+          const existingConnections = Array.from(boardConnections.get(boardId)!);
+          existingConnections.forEach(conn => {
+            if ((dbUserId && conn.userId === dbUserId) || 
+                (userEmail && conn.userEmail === userEmail)) {
+              boardConnections.get(boardId)!.delete(conn);
+              // Notify others that the old connection is leaving
+              conn.socket.to(boardId).emit('user-left', {
+                userId: conn.userId,
+                userName: conn.userName,
+                userEmail: conn.userEmail,
+                socketId: conn.socket.id
+              });
+            }
+          });
         }
         boardConnections.get(boardId)!.add(clientConnection);
 
@@ -246,8 +263,9 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
         const update = new Uint8Array(data.update);
         Y.applyUpdate(yDoc, update);
 
-        // Broadcast update to all other clients on the same board
-        socket.to(clientConnection.boardId).emit('board-update', {
+        // Broadcast update to ALL clients on the same board (including the sender)
+        // This ensures the initiator sees their own changes reflected back
+        io.to(clientConnection.boardId).emit('board-update', {
           update: Array.from(update)
         });
       }
@@ -259,12 +277,19 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
     socket.on('cursor-move', (data: { x: number; y: number }) => {
       if (!clientConnection) return;
 
+      // Validate cursor coordinates
+      if (data.x === undefined || data.y === undefined || 
+          isNaN(data.x) || isNaN(data.y)) {
+        return;
+      }
+
       clientConnection.cursor = { x: data.x, y: data.y };
 
       // Broadcast cursor position to other clients
       socket.to(clientConnection.boardId).emit('cursor-update', {
         userId: clientConnection.userId,
         userName: clientConnection.userName,
+        userEmail: clientConnection.userEmail,
         color: clientConnection.color,
         cursor: data,
         socketId: socket.id
@@ -321,15 +346,16 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
           userName: conn.userName,
           userEmail: conn.userEmail,
           color: conn.color,
-          cursor: conn.cursor,
+          cursor: conn.cursor, // Keep cursor for now, but it will be stale
           socketId: conn.socket.id,
           role: (conn.socket as any).userRole || 'viewer'
         }));
       
-      // Broadcast updated list to all remaining clients
-      if (remainingUsers.length > 0) {
-        io.to(boardId).emit('active-users', { users: remainingUsers });
-      }
+      // Broadcast updated list to all remaining clients (including empty list)
+      io.to(boardId).emit('active-users', { users: remainingUsers });
+
+      // Clear the client connection reference
+      clientConnection = null;
 
       console.log(`👋 User ${userName} (${socket.id}) left board ${boardId}`);
     });

@@ -68,15 +68,17 @@ export const sendInvitation = async (req: Request, res: Response): Promise<any> 
     const token = uuidv4();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-    if (existingInvitation && existingInvitation.status === 'pending') {
-      // Update existing invitation
+    if (existingInvitation) {
+      // Update existing invitation regardless of status
+      // This allows re-inviting users who previously accepted or had expired invitations
       invitation = await prisma.boardInvitation.update({
         where: { id: existingInvitation.id },
         data: {
           token,
           expiresAt,
           role,
-          invitedBy: userId
+          invitedBy: userId,
+          status: 'pending' // Reset status to pending for new invitation
         }
       });
     } else {
