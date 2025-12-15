@@ -184,19 +184,8 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
           state: Array.from(state)
         });
 
-        // Notify other clients about new user
-        socket.to(boardId).emit('user-joined', {
-          userId,
-          userName: clientConnection.userName,
-          userEmail,
-          color: clientConnection.color,
-          socketId: socket.id,
-          role: userRole
-        });
-
-        // Send list of active users to the new client
-        const activeUsers = Array.from(boardConnections.get(boardId) || [])
-          .filter(conn => conn.socket.id !== socket.id)
+        // Send list of ALL active users to the new client (including themselves)
+        const allActiveUsers = Array.from(boardConnections.get(boardId) || [])
           .map(conn => ({
             userId: conn.userId,
             userName: conn.userName,
@@ -207,7 +196,18 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
             role: (conn.socket as any).userRole || 'viewer'
           }));
 
-        socket.emit('active-users', { users: activeUsers });
+        // Send complete list to the new client
+        socket.emit('active-users', { users: allActiveUsers });
+        
+        // Notify all OTHER clients about the new user joining
+        socket.to(boardId).emit('user-joined', {
+          userId: clientConnection.userId,
+          userName: clientConnection.userName,
+          userEmail,
+          color: clientConnection.color,
+          socketId: socket.id,
+          role: userRole
+        });
         
         // Send user role to client
         socket.emit('user-role', { role: userRole });
@@ -293,7 +293,7 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
     socket.on('disconnect', () => {
       if (!clientConnection) return;
 
-      const { boardId, userId, userName } = clientConnection;
+      const { boardId, userId, userName, userEmail } = clientConnection;
 
       // Remove from board connections
       const connections = boardConnections.get(boardId);
@@ -302,8 +302,7 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
 
         if (connections.size === 0) {
           boardConnections.delete(boardId);
-          // Optionally clean up the Yjs document if no one is connected
-          // boardDocs.delete(boardId);
+          boardDocs.delete(boardId);
         }
       }
 
@@ -311,8 +310,26 @@ export function initWebSocketServer(server: http.Server): SocketIOServer {
       socket.to(boardId).emit('user-left', {
         userId,
         userName,
+        userEmail,
         socketId: socket.id
       });
+
+      // Update all remaining clients with new active users list
+      const remainingUsers = Array.from(boardConnections.get(boardId) || [])
+        .map(conn => ({
+          userId: conn.userId,
+          userName: conn.userName,
+          userEmail: conn.userEmail,
+          color: conn.color,
+          cursor: conn.cursor,
+          socketId: conn.socket.id,
+          role: (conn.socket as any).userRole || 'viewer'
+        }));
+      
+      // Broadcast updated list to all remaining clients
+      if (remainingUsers.length > 0) {
+        io.to(boardId).emit('active-users', { users: remainingUsers });
+      }
 
       console.log(`👋 User ${userName} (${socket.id}) left board ${boardId}`);
     });
