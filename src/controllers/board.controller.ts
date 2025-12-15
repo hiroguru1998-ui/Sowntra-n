@@ -23,7 +23,8 @@ export async function listBoards(req: Request, res: Response): Promise<void> {
             id: true,
             name: true,
             email: true,
-            profileImage: true
+            profileImage: true,
+            firebaseUid: true
           }
         },
         members: {
@@ -33,7 +34,8 @@ export async function listBoards(req: Request, res: Response): Promise<void> {
                 id: true,
                 name: true,
                 email: true,
-                profileImage: true
+                profileImage: true,
+                firebaseUid: true
               }
             }
           }
@@ -54,7 +56,8 @@ export async function listBoards(req: Request, res: Response): Promise<void> {
             id: true,
             name: true,
             email: true,
-            profileImage: true
+            profileImage: true,
+            firebaseUid: true
           }
         },
         members: {
@@ -64,7 +67,8 @@ export async function listBoards(req: Request, res: Response): Promise<void> {
                 id: true,
                 name: true,
                 email: true,
-                profileImage: true
+                profileImage: true,
+                firebaseUid: true
               }
             }
           }
@@ -149,7 +153,8 @@ export async function getBoard(req: Request, res: Response): Promise<void> {
             id: true,
             name: true,
             email: true,
-            profileImage: true
+            profileImage: true,
+            firebaseUid: true
           }
         },
         members: {
@@ -159,7 +164,8 @@ export async function getBoard(req: Request, res: Response): Promise<void> {
                 id: true,
                 name: true,
                 email: true,
-                profileImage: true
+                profileImage: true,
+                firebaseUid: true
               }
             }
           }

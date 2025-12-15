@@ -46,6 +46,7 @@ model Board {
   assets          Asset[]
   comments        Comment[]
   versions        BoardVersion[]
+  invitations     BoardInvitation[]
   
   @@index([ownerId])
   @@index([createdAt])
@@ -120,5 +121,26 @@ model BoardVersion {
   
   @@index([boardId])
   @@index([createdAt])
+}
+
+// Board invitation model
+model BoardInvitation {
+  id          String    @id @default(uuid())
+  boardId     String
+  email       String
+  invitedBy   String
+  token       String    @unique
+  role        String    @default("editor") // editor, viewer
+  status      String    @default("pending") // pending, accepted, expired
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  board       Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  
+  @@unique([boardId, email])
+  @@index([token])
+  @@index([email])
+  @@index([boardId])
 }
 

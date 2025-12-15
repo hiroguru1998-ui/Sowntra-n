@@ -131,8 +131,18 @@ export async function loadProjectData(req: Request, res: Response): Promise<void
     let projectData = null;
     if (board.yDocState) {
       try {
-        projectData = JSON.parse(board.yDocState.toString());
-      } catch {
+        // Handle Prisma Bytes type - convert Buffer to string then parse JSON
+        const yDocStateString = Buffer.isBuffer(board.yDocState) 
+          ? board.yDocState.toString('utf8')
+          : String(board.yDocState);
+        
+        if (yDocStateString && yDocStateString.trim()) {
+          projectData = JSON.parse(yDocStateString);
+        } else {
+          projectData = { elements: [], pages: [] };
+        }
+      } catch (parseError) {
+        console.error('Error parsing board project data:', parseError);
         projectData = { elements: [], pages: [] };
       }
     }
@@ -432,7 +442,23 @@ export async function loadUserProject(req: Request, res: Response): Promise<void
       return;
     }
 
-    const projectData = project.yDocState ? JSON.parse(project.yDocState.toString()) : {};
+    let projectData = {};
+    if (project.yDocState) {
+      try {
+        // Handle Prisma Bytes type - convert Buffer to string then parse JSON
+        const yDocStateString = Buffer.isBuffer(project.yDocState) 
+          ? project.yDocState.toString('utf8')
+          : String(project.yDocState);
+        
+        if (yDocStateString && yDocStateString.trim()) {
+          projectData = JSON.parse(yDocStateString);
+        }
+      } catch (parseError) {
+        console.error('Error parsing project data:', parseError);
+        // Return empty project data if parsing fails
+        projectData = {};
+      }
+    }
 
     res.json({
       project: {

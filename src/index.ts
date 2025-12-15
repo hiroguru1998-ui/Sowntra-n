@@ -29,6 +29,7 @@ import assetRoutes from './routes/asset.routes';
 import userRoutes from './routes/user.routes';
 import projectRoutes from './routes/project.routes';
 import healthRoutes from './routes/health.routes';
+import invitationRoutes from './routes/invitation.routes';
 import { initWebSocketServer } from './websocket/collaboration';
 import { prisma } from './config/database';
 
@@ -88,7 +89,8 @@ app.get('/', (_req: Request, res: Response) => {
       users: '/api/users',
       boards: '/api/boards',
       projects: '/api/projects',
-      assets: '/api/assets'
+      assets: '/api/assets',
+      invitations: '/api/invitations'
     }
   });
 });
@@ -107,6 +109,7 @@ app.use('/api/boards', boardRoutes);
 app.use('/api/assets', assetRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/projects', projectRoutes);
+app.use('/api/invitations', invitationRoutes);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: 'Route not found' });

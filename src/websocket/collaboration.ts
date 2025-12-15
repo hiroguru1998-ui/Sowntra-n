@@ -1,13 +1,14 @@
-import WebSocket, { WebSocketServer } from 'ws';
+import { Server as SocketIOServer, Socket } from 'socket.io';
 import * as Y from 'yjs';
 import { prisma } from '../config/database';
 import http from 'http';
 
 interface ClientConnection {
-  ws: WebSocket;
+  socket: Socket;
   boardId: string;
   userId?: string;
   userName?: string;
+  userEmail?: string;
   color?: string;
   cursor?: { x: number; y: number };
 }
@@ -19,291 +20,305 @@ const boardConnections = new Map<string, Set<ClientConnection>>();
 const boardDocs = new Map<string, Y.Doc>();
 
 /**
- * Initialize WebSocket server for real-time collaboration
+ * Initialize Socket.IO server for real-time collaboration
  */
-export function initWebSocketServer(server: http.Server): WebSocketServer {
-  const wss = new WebSocketServer({ 
-    server,
-    path: '/collaboration'
+export function initWebSocketServer(server: http.Server): SocketIOServer {
+  const io = new SocketIOServer(server, {
+    cors: {
+      origin: ['http://localhost:3000', 'http://localhost:4173', 'http://localhost:5173'],
+      credentials: true
+    },
+    path: '/socket.io/'
   });
 
-  console.log('✅ WebSocket server initialized on path: /collaboration');
+  console.log('✅ Socket.IO server initialized');
 
-  wss.on('connection', (ws: WebSocket, _req) => {
-    console.log('🔌 New WebSocket connection');
+  io.on('connection', (socket: Socket) => {
+    console.log('🔌 New Socket.IO connection:', socket.id);
 
     let clientConnection: ClientConnection | null = null;
-
-    ws.on('message', async (data: Buffer) => {
-      try {
-        const message = JSON.parse(data.toString());
-        
-        switch (message.type) {
-          case 'join':
-            await handleJoin(ws, message, clientConnection);
-            break;
-
-          case 'sync':
-            handleSync(ws, message, clientConnection);
-            break;
-
-          case 'update':
-            handleUpdate(message, clientConnection);
-            break;
-
-          case 'awareness':
-            handleAwareness(message, clientConnection);
-            break;
-
-          case 'cursor':
-            handleCursor(message, clientConnection);
-            break;
-
-          default:
-            console.warn('Unknown message type:', message.type);
-        }
-      } catch (error) {
-        console.error('Error handling WebSocket message:', error);
-        ws.send(JSON.stringify({ type: 'error', message: 'Invalid message format' }));
-      }
-    });
-
-    ws.on('close', () => {
-      handleDisconnect(clientConnection);
-    });
-
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-      handleDisconnect(clientConnection);
-    });
 
     /**
      * Handle client joining a board
      */
-    async function handleJoin(
-      ws: WebSocket,
-      message: any,
-      _currentConnection: ClientConnection | null
-    ): Promise<void> {
-      const { boardId, userId, userName } = message;
+    socket.on('join-board', async (data: { boardId: string; userId?: string; userName?: string; userEmail?: string }) => {
+      try {
+        const { boardId, userId, userName, userEmail } = data;
 
-      if (!boardId) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Board ID required' }));
-        return;
-      }
-
-      // Load or create Yjs document for the board
-      let yDoc = boardDocs.get(boardId);
-      
-      if (!yDoc) {
-        yDoc = new Y.Doc();
-        
-        // Try to load persisted state from database
-        try {
-          const board = await prisma.board.findUnique({
-            where: { id: boardId }
-          });
-
-          if (board && board.yDocState) {
-            Y.applyUpdate(yDoc, new Uint8Array(board.yDocState));
-          }
-        } catch (error) {
-          console.error('Error loading board state:', error);
+        if (!boardId) {
+          socket.emit('error', { message: 'Board ID required' });
+          return;
         }
 
-        boardDocs.set(boardId, yDoc);
+        // Verify board access and get user role
+        let userRole = 'viewer';
+        let hasAccess = false;
+        let dbUserId: string | undefined = undefined;
 
-        // Auto-save document changes to database
-        yDoc.on('update', async (update: Uint8Array) => {
+        if (userId) {
           try {
-            await prisma.board.update({
+            // Look up database user ID from Firebase UID
+            const dbUser = await prisma.user.findUnique({
+              where: { firebaseUid: userId }
+            });
+            
+            if (dbUser) {
+              dbUserId = dbUser.id;
+            }
+
+            const board = await prisma.board.findUnique({
               where: { id: boardId },
-              data: { 
-                yDocState: Buffer.from(update),
-                lastModified: new Date()
+              include: {
+                members: {
+                  where: dbUserId ? { userId: dbUserId } : undefined,
+                  include: { user: true }
+                }
               }
             });
+
+            if (board) {
+              // Check if user is owner
+              if (dbUserId && board.ownerId === dbUserId) {
+                userRole = 'owner';
+                hasAccess = true;
+              } else if (dbUserId) {
+                // Check if user is a member
+                const member = board.members.find(m => m.userId === dbUserId);
+                if (member) {
+                  userRole = member.role;
+                  hasAccess = true;
+                } else if (board.isPublic) {
+                  // Public boards are accessible to everyone
+                  hasAccess = true;
+                }
+              } else if (board.isPublic) {
+                // Public boards are accessible to everyone
+                hasAccess = true;
+              }
+            }
           } catch (error) {
-            console.error('Error saving board state:', error);
+            console.error('Error verifying board access:', error);
           }
+        } else if (boardId) {
+          // Allow anonymous access to public boards
+          try {
+            const board = await prisma.board.findUnique({
+              where: { id: boardId }
+            });
+            hasAccess = board?.isPublic || false;
+          } catch (error) {
+            console.error('Error checking board access:', error);
+          }
+        }
+
+        if (!hasAccess) {
+          socket.emit('error', { message: 'Access denied to this board' });
+          return;
+        }
+
+        // Join the socket room for this board
+        socket.join(boardId);
+
+        // Load or create Yjs document for the board
+        let yDoc = boardDocs.get(boardId);
+        
+        if (!yDoc) {
+          yDoc = new Y.Doc();
+          
+          // Try to load persisted state from database
+          try {
+            const board = await prisma.board.findUnique({
+              where: { id: boardId }
+            });
+
+            if (board && board.yDocState) {
+              Y.applyUpdate(yDoc, new Uint8Array(board.yDocState));
+            }
+          } catch (error) {
+            console.error('Error loading board state:', error);
+          }
+
+          boardDocs.set(boardId, yDoc);
+
+          // Auto-save document changes to database
+          yDoc.on('update', async (update: Uint8Array) => {
+            try {
+              await prisma.board.update({
+                where: { id: boardId },
+                data: { 
+                  yDocState: Buffer.from(update),
+                  lastModified: new Date()
+                }
+              });
+            } catch (error) {
+              console.error('Error saving board state:', error);
+            }
+          });
+        }
+
+        // Create client connection
+        const color = getRandomColor();
+        clientConnection = {
+          socket,
+          boardId,
+          userId: dbUserId || userId, // Use database user ID if available
+          userName: userName || 'Anonymous',
+          userEmail,
+          color,
+        };
+
+        // Store user role and IDs in socket data for later use
+        (socket as any).userRole = userRole;
+        (socket as any).boardId = boardId;
+        (socket as any).dbUserId = dbUserId;
+
+        // Add to board connections
+        if (!boardConnections.has(boardId)) {
+          boardConnections.set(boardId, new Set());
+        }
+        boardConnections.get(boardId)!.add(clientConnection);
+
+        // Send current document state to client
+        const state = Y.encodeStateAsUpdate(yDoc);
+        socket.emit('sync-board', {
+          state: Array.from(state)
         });
+
+        // Notify other clients about new user
+        socket.to(boardId).emit('user-joined', {
+          userId,
+          userName: clientConnection.userName,
+          userEmail,
+          color: clientConnection.color,
+          socketId: socket.id,
+          role: userRole
+        });
+
+        // Send list of active users to the new client
+        const activeUsers = Array.from(boardConnections.get(boardId) || [])
+          .filter(conn => conn.socket.id !== socket.id)
+          .map(conn => ({
+            userId: conn.userId,
+            userName: conn.userName,
+            userEmail: conn.userEmail,
+            color: conn.color,
+            cursor: conn.cursor,
+            socketId: conn.socket.id,
+            role: (conn.socket as any).userRole || 'viewer'
+          }));
+
+        socket.emit('active-users', { users: activeUsers });
+        
+        // Send user role to client
+        socket.emit('user-role', { role: userRole });
+
+        console.log(`✅ User ${userName} (${socket.id}) joined board ${boardId}`);
+      } catch (error) {
+        console.error('Error in join-board:', error);
+        socket.emit('error', { message: 'Failed to join board' });
       }
-
-      // Create client connection
-      clientConnection = {
-        ws,
-        boardId,
-        userId,
-        userName: userName || 'Anonymous',
-        color: getRandomColor(),
-      };
-
-      // Add to board connections
-      if (!boardConnections.has(boardId)) {
-        boardConnections.set(boardId, new Set());
-      }
-      boardConnections.get(boardId)!.add(clientConnection);
-
-      // Send current document state to client
-      const state = Y.encodeStateAsUpdate(yDoc);
-      ws.send(JSON.stringify({
-        type: 'sync',
-        state: Array.from(state)
-      }));
-
-      // Notify other clients about new user
-      broadcastToBoard(boardId, {
-        type: 'user-joined',
-        userId,
-        userName: clientConnection.userName,
-        color: clientConnection.color
-      }, clientConnection);
-
-      // Send list of active users to the new client
-      const activeUsers = Array.from(boardConnections.get(boardId) || [])
-        .filter(conn => conn !== clientConnection)
-        .map(conn => ({
-          userId: conn.userId,
-          userName: conn.userName,
-          color: conn.color,
-          cursor: conn.cursor
-        }));
-
-      ws.send(JSON.stringify({
-        type: 'active-users',
-        users: activeUsers
-      }));
-
-      console.log(`✅ User ${userName} joined board ${boardId}`);
-    }
+    });
 
     /**
      * Handle document sync
      */
-    function handleSync(
-      _ws: WebSocket,
-      message: any,
-      connection: ClientConnection | null
-    ): void {
-      if (!connection) return;
+    socket.on('sync-state', (data: { state: number[] }) => {
+      if (!clientConnection) return;
 
-      const yDoc = boardDocs.get(connection.boardId);
+      const yDoc = boardDocs.get(clientConnection.boardId);
       if (!yDoc) return;
 
-      if (message.state) {
-        Y.applyUpdate(yDoc, new Uint8Array(message.state));
+      if (data.state) {
+        Y.applyUpdate(yDoc, new Uint8Array(data.state));
       }
-    }
+    });
 
     /**
      * Handle document updates
      */
-    function handleUpdate(message: any, connection: ClientConnection | null): void {
-      if (!connection) return;
+    socket.on('board-update', (data: { update: number[] }) => {
+      if (!clientConnection) return;
 
-      const yDoc = boardDocs.get(connection.boardId);
+      const yDoc = boardDocs.get(clientConnection.boardId);
       if (!yDoc) return;
 
-      if (message.update) {
-        const update = new Uint8Array(message.update);
+      if (data.update) {
+        const update = new Uint8Array(data.update);
         Y.applyUpdate(yDoc, update);
 
         // Broadcast update to all other clients on the same board
-        broadcastToBoard(connection.boardId, {
-          type: 'update',
+        socket.to(clientConnection.boardId).emit('board-update', {
           update: Array.from(update)
-        }, connection);
+        });
       }
-    }
-
-    /**
-     * Handle awareness updates (user presence)
-     */
-    function handleAwareness(message: any, connection: ClientConnection | null): void {
-      if (!connection) return;
-
-      // Broadcast awareness to other clients
-      broadcastToBoard(connection.boardId, {
-        type: 'awareness',
-        userId: connection.userId,
-        userName: connection.userName,
-        color: connection.color,
-        state: message.state
-      }, connection);
-    }
+    });
 
     /**
      * Handle cursor position updates
      */
-    function handleCursor(message: any, connection: ClientConnection | null): void {
-      if (!connection) return;
+    socket.on('cursor-move', (data: { x: number; y: number }) => {
+      if (!clientConnection) return;
 
-      connection.cursor = message.cursor;
+      clientConnection.cursor = { x: data.x, y: data.y };
 
       // Broadcast cursor position to other clients
-      broadcastToBoard(connection.boardId, {
-        type: 'cursor',
-        userId: connection.userId,
-        userName: connection.userName,
-        color: connection.color,
-        cursor: message.cursor
-      }, connection);
-    }
+      socket.to(clientConnection.boardId).emit('cursor-update', {
+        userId: clientConnection.userId,
+        userName: clientConnection.userName,
+        color: clientConnection.color,
+        cursor: data,
+        socketId: socket.id
+      });
+    });
+
+    /**
+     * Handle awareness updates (user presence)
+     */
+    socket.on('awareness-update', (data: { state: any }) => {
+      if (!clientConnection) return;
+
+      // Broadcast awareness to other clients
+      socket.to(clientConnection.boardId).emit('awareness-update', {
+        userId: clientConnection.userId,
+        userName: clientConnection.userName,
+        color: clientConnection.color,
+        state: data.state,
+        socketId: socket.id
+      });
+    });
 
     /**
      * Handle client disconnect
      */
-    function handleDisconnect(connection: ClientConnection | null): void {
-      if (!connection) return;
+    socket.on('disconnect', () => {
+      if (!clientConnection) return;
 
-      const { boardId, userId, userName } = connection;
+      const { boardId, userId, userName } = clientConnection;
 
       // Remove from board connections
       const connections = boardConnections.get(boardId);
       if (connections) {
-        connections.delete(connection);
+        connections.delete(clientConnection);
 
         if (connections.size === 0) {
           boardConnections.delete(boardId);
-          
           // Optionally clean up the Yjs document if no one is connected
           // boardDocs.delete(boardId);
         }
       }
 
       // Notify other clients
-      broadcastToBoard(boardId, {
-        type: 'user-left',
+      socket.to(boardId).emit('user-left', {
         userId,
-        userName
+        userName,
+        socketId: socket.id
       });
 
-      console.log(`👋 User ${userName} left board ${boardId}`);
-    }
+      console.log(`👋 User ${userName} (${socket.id}) left board ${boardId}`);
+    });
   });
 
-  return wss;
-}
-
-/**
- * Broadcast message to all clients on a board except sender
- */
-function broadcastToBoard(
-  boardId: string,
-  message: any,
-  sender?: ClientConnection | null
-): void {
-  const connections = boardConnections.get(boardId);
-  
-  if (!connections) return;
-
-  const messageStr = JSON.stringify(message);
-
-  connections.forEach((connection) => {
-    if (connection !== sender && connection.ws.readyState === WebSocket.OPEN) {
-      connection.ws.send(messageStr);
-    }
-  });
+  return io;
 }
 
 /**
@@ -316,4 +331,3 @@ function getRandomColor(): string {
   ];
   return colors[Math.floor(Math.random() * colors.length)];
 }
-
