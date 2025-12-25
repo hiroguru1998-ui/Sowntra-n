@@ -5,7 +5,7 @@ import {
   getBoardInvitations,
   validateInvitation
 } from '../controllers/invitation.controller';
-import { authenticateUser, optionalAuth } from '../middleware/auth';
+import { authenticateUser } from '../middleware/auth';
 
 const router = Router();
 
