@@ -435,7 +435,7 @@ async function sendInvitationEmail(
     }
   });
 
-  const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${token}`;
+  const inviteUrl = `${process.env.FRONTEND_URL || 'https://sowntra.com'}/invite/${token}`;
 
   const mailOptions = {
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
